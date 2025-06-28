@@ -26,6 +26,7 @@
 ******************************************************************************
 */
 #include "LaunchFile.h"
+#include "DiskOverlay.h"
 #include "IsFileExtension.h"
 #include "ziphelper.h"
 #include "RomLoader.h"
@@ -264,7 +265,8 @@ int insertCartridge(Properties* properties, int drive, const char* fname, const 
     return 1;
 }
 
-int insertDiskette(Properties* properties, int drive, const char* fname, const char* inZipFile, int forceAutostart) {
+int insertDiskette(Properties* properties, int drive, const char* fname, const char* inZipFile, int forceAutostart) 
+{
     char diskName[512] = "";
     char filename[512] = "";
     int autostart = forceAutostart == 1 || (drive == 0 ? properties->diskdrive.autostartA : 0);
@@ -274,6 +276,15 @@ int insertDiskette(Properties* properties, int drive, const char* fname, const c
     if (fname) strcpy(filename, fname);
 
     emulatorResetMixer();
+
+    /* Always unmount overlay before inserting new */
+    unmountDiskOverlay(drive);
+
+    if (fname && fname[0]) 
+    {
+        /* Typical sector size for MSX .dsk images is 512 */
+        mountDiskOverlay(drive, fname, 512);
+    }
 
     if (isZip) {
         if (inZipFile != NULL) {
