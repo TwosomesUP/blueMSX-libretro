@@ -31,6 +31,7 @@
 #include "InputEvent.h"
 #include "R800.h"
 #include "Src/Utils/SaveState.h"
+#include "DiskOverlay.h"
 
 #include "ziphelper.c"
 
@@ -72,6 +73,8 @@ int hard_reset_f12 = 0;
 static int sega_nmi_pressed = 0;
 static int hard_reset_f12_pressed = 0;
 static int input_analog_deadzone = (int)(0.25f * (float)0x8000);
+
+char overlayDir[512] = {0};
 
 static void reevaluate_variables_io_sound(bool setToMixer);
 
@@ -247,6 +250,7 @@ bool set_image_index(unsigned index)
    if(disk_index == disk_images)
    {
       //retroarch is trying to set "no disk in tray"
+      unmountDiskImage(0);
       return true;
    }
    
@@ -326,39 +330,43 @@ bool get_image_label(unsigned index, char *label, size_t len)
 
 void attach_disk_swap_interface(void)
 {
-    unsigned version = 0;
-    if (!environ_cb(RETRO_ENVIRONMENT_GET_DISK_CONTROL_INTERFACE_VERSION, &version))
-        version = 0;
+   unsigned version = 0;
+   if (!environ_cb(RETRO_ENVIRONMENT_GET_DISK_CONTROL_INTERFACE_VERSION, &version))
+      version = 0;
 
-    if (version >= 1)
-    {
-        struct retro_disk_control_ext_callback dskcb_ext = {
-            set_eject_state,
-            get_eject_state,
-            set_image_index,
-            get_image_index,
-            get_num_images,
-            replace_image_index,
-            add_image_index,
-            set_initial_image,
-            get_image_path,
-            get_image_label
-        };
-        environ_cb(RETRO_ENVIRONMENT_SET_DISK_CONTROL_EXT_INTERFACE, &dskcb_ext);
-    }
-    else
-    {
-        struct retro_disk_control_callback dskcb = {
-            set_eject_state,
-            get_eject_state,
-            set_image_index,
-            get_image_index,
-            get_num_images,
-            replace_image_index,
-            add_image_index
-        };
-        environ_cb(RETRO_ENVIRONMENT_SET_DISK_CONTROL_INTERFACE, &dskcb);
-    }
+   if (version >= 1)
+   {
+      struct retro_disk_control_ext_callback dskcb_ext;
+      memset(&dskcb_ext, 0, sizeof(dskcb_ext));
+
+      dskcb_ext.set_eject_state = set_eject_state;
+      dskcb_ext.get_eject_state = get_eject_state;
+      dskcb_ext.set_image_index = set_image_index;
+      dskcb_ext.get_image_index = get_image_index;
+      dskcb_ext.get_num_images = get_num_images;
+      dskcb_ext.replace_image_index = replace_image_index;
+      dskcb_ext.add_image_index = add_image_index;
+      dskcb_ext.set_initial_image = set_initial_image;
+      dskcb_ext.get_image_path = get_image_path;
+      dskcb_ext.get_image_label = get_image_label;
+
+      environ_cb(RETRO_ENVIRONMENT_SET_DISK_CONTROL_EXT_INTERFACE, &dskcb_ext);
+   }
+   else
+   {
+      struct retro_disk_control_callback dskcb;
+      memset(&dskcb, 0, sizeof(dskcb));
+
+      dskcb.set_eject_state = set_eject_state;
+      dskcb.get_eject_state = get_eject_state;
+      dskcb.set_image_index = set_image_index;
+      dskcb.get_image_index = get_image_index;
+      dskcb.get_num_images = get_num_images;
+      dskcb.replace_image_index = replace_image_index;
+      dskcb.add_image_index = add_image_index;
+
+      environ_cb(RETRO_ENVIRONMENT_SET_DISK_CONTROL_INTERFACE, &dskcb);
+   }
 }
 /* end .dsk swap support */
 
@@ -366,21 +374,20 @@ static bool read_m3u(const char *file)
 {
    char line[PATH_MAX];
    char name[PATH_MAX];
-   FILE *f = fopen(file, "r");
+   char *carriage_return;
+   char *newline;
+   char *start;
+   char *end;
+   FILE *f;
 
+   f = fopen(file, "r");
    if (!f)
       return false;
 
-   while (fgets(line, sizeof(line), f)
-         && disk_images < 
-         sizeof(disk_paths) / sizeof(disk_paths[0])) 
+   while (fgets(line, sizeof(line), f) &&
+          disk_images < (sizeof(disk_paths) / sizeof(disk_paths[0])))
    {
-      char *carriage_return = NULL;
-      char *newline         = NULL;
-
-      if (line[0] == '#')
-         continue;
-
+      /* Remove CR/LF */
       carriage_return = strchr(line, '\r');
       if (carriage_return)
          *carriage_return = '\0';
@@ -389,12 +396,47 @@ static bool read_m3u(const char *file)
       if (newline)
          *newline = '\0';
 
-      if (line[0] != '\0')
+      /* Skip comments */
+      if (line[0] == '#')
+         continue;
+
+      /* Trim leading whitespace */
+      start = line;
+      while (*start && isspace((unsigned char)*start))
+         start++;
+
+      /* Trim trailing whitespace */
+      end = start + strlen(start) - 1;
+      while (end >= start && isspace((unsigned char)*end))
       {
-         snprintf(name, sizeof(name), "%s%c%s", base_dir, SLASH, line);
-         strcpy(disk_paths[disk_images], name);
-         disk_images++;
+         *end = '\0';
+         end--;
       }
+
+      if (*start == '\0')
+         continue; /* Skip empty lines */
+
+      /* Handle absolute vs relative paths */
+#ifdef _WIN32
+      if ((start[0] && start[1] == ':') ||
+          start[0] == '\\' || start[0] == '/')
+#else
+      if (start[0] == '/')
+#endif
+      {
+         /* Absolute path */
+         strncpy(name, start, sizeof(name));
+         name[sizeof(name) - 1] = '\0';
+      }
+      else
+      {
+         /* Relative path */
+         snprintf(name, sizeof(name), "%s%c%s", base_dir, SLASH, start);
+      }
+
+      strncpy(disk_paths[disk_images], name, PATH_MAX);
+      disk_paths[disk_images][PATH_MAX - 1] = '\0';
+      disk_images++;
    }
 
    fclose(f);
@@ -1004,7 +1046,6 @@ bool retro_load_game(const struct retro_game_info *info)
       return false;
    }
 
-
    if (!info && log_cb)
       log_cb(RETRO_LOG_INFO, "Starting core without content\n");
 
@@ -1036,7 +1077,12 @@ bool retro_load_game(const struct retro_game_info *info)
    machineSetDirectory(machines_dir);
 
    if(environ_cb(RETRO_ENVIRONMENT_GET_SAVE_DIRECTORY, &save_dir) && save_dir)
+   {
       boardSetDirectory(save_dir);
+      strncpy(overlayDir, save_dir, sizeof(overlayDir) - 1);
+      overlayDir[sizeof(overlayDir) - 1] = 0;
+   }
+      
 
 #if 0
    boardSetDirectory(buffer);
@@ -1213,6 +1259,12 @@ bool retro_load_game(const struct retro_game_info *info)
             if (i == 0 && disk_inserted)
             {
                insertDiskette(properties, 0, disk_paths[disk_index], NULL, -1);
+
+               // >>> Overlay integration:
+               // Typical sector size for MSX .dsk images is 512, but you may want to determine this dynamically.
+               size_t sectorSize = 512;
+               mountDiskImage(0, disk_paths[disk_index], sectorSize);
+               // <<<
             }
             updateExtendedDiskName(i, properties->media.disks[i].fileName, properties->media.disks[i].fileNameInZip);
          }
@@ -1581,6 +1633,8 @@ bool retro_load_game_special(unsigned a, const struct retro_game_info *b, size_t
 
 void retro_unload_game(void)
 {
+   unmountDiskImage(0);
+
    if (image_buffer)
       free(image_buffer);
    

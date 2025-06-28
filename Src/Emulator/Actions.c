@@ -26,6 +26,7 @@
 ******************************************************************************
 */
 #include "Actions.h"
+#include "DiskOverlay.h"
 #include "MsxTypes.h"
 #include "Switches.h"
 #include "AudioMixer.h"
@@ -131,6 +132,7 @@ void actionDiskRemove(int i) {
     if (emulatorGetState() != EMU_STOPPED) {
         emulatorSuspend();
         boardChangeDiskette(i, NULL, NULL);
+        unmountDiskImage(i);
         emulatorResume();
     }
     archUpdateMenu(0);

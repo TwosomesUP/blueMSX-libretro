@@ -26,6 +26,7 @@
 ******************************************************************************
 */
 #include "LaunchFile.h"
+#include "DiskOverlay.h"
 #include "IsFileExtension.h"
 #include "ziphelper.h"
 #include "RomLoader.h"
@@ -274,6 +275,16 @@ int insertDiskette(Properties* properties, int drive, const char* fname, const c
     if (fname) strcpy(filename, fname);
 
     emulatorResetMixer();
+
+    // === Overlay logic: unmount previous and mount new disk image ===
+    unmountDiskImage(drive); // Always unmount before inserting new
+
+    if (fname && fname[0]) {
+        // Typical sector size for MSX .dsk images is 512
+        // (If you want to auto-detect sector size, do it here)
+        mountDiskImage(drive, fname, 512);
+    }
+    // === End overlay logic ===
 
     if (isZip) {
         if (inZipFile != NULL) {
